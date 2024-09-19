@@ -5,7 +5,7 @@ import streamlit as st
 
 AURA_CONNECTION_URI: str = "neo4j+s://2df8ccfd.databases.neo4j.io:7687"
 AURA_USERNAME: str = "neo4j"
-AURA_PASSWORD: str = environ.get("NEO4J_PASSWORD")
+AURA_PASSWORD: str = environ.get("NEO4J_PASSWORD") or "default"
 
 GAIA_NODE_URL: str = "https://gemma.us.gaianet.network/v1"
 GAIA_NODE_NAME: str = "gemma"
