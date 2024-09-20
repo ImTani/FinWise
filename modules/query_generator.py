@@ -3,7 +3,7 @@ from modules.llm_query_generator import LLMQueryGenerator
 
 class QueryGenerator:
     def __init__(self, client, model_name: str):
-        self.db_schema = self.generate_db_schema()
+        self.db_schema = self.generate_db_schema(self)
         self.llm_generator = LLMQueryGenerator(client, model_name, self.db_schema)
 
     def generate_and_validate_query(self, intent: Dict[str, Any], entities: Dict[str, List[str]]) -> Tuple[str, bool, str]:
