@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import List, Dict, Any
 from collections import deque
 from datetime import datetime
 import uuid
@@ -10,17 +10,31 @@ class ConversationContext:
         self.current_entities = {
             "companies": [],
             "metrics": [],
-            "time_period": "latest"
+            "limit": [],
+            "startDate": [],
+            "endDate": [],
+            "industry": None
         }
         self.current_intent = {}
         self.kg_data = ""
         self.last_ai_response = ""
 
-    def update(self, user_input: str, companies: List[str], metrics: List[str], 
-               time_period: str, intent: Dict[str, Any], kg_response: str):
+    def update(
+        self,
+        user_input: str,
+        companies: List[str],
+        metrics: List[str],
+        start_date: List[str],
+        end_date: List[str],
+        industry: str,
+        intent: Dict[str, Any],
+        kg_response: str
+    ):
         self.current_entities["companies"] = companies if companies else self.current_entities["companies"]
         self.current_entities["metrics"] = metrics if metrics else self.current_entities["metrics"]
-        self.current_entities["time_period"] = time_period if time_period != "latest" else self.current_entities["time_period"]
+        self.current_entities["startDate"] = start_date if start_date else self.current_entities["startDate"]
+        self.current_entities["endDate"] = end_date if end_date else self.current_entities["endDate"]
+        self.current_entities["industry"] = industry if industry else self.current_entities["industry"]
         self.current_intent = intent
         self.kg_data = kg_response
 
@@ -62,10 +76,20 @@ class Conversation:
 
         # Set title to first user message if no title is given
         if role == "user" and self.title == "Untitled Conversation":
-            self.title = content[:30]  # Use the first 30 characters of the first user message as title
+            self.title = content[:20] + "..."  # Use the first 20 characters of the first user message as title
 
         if role == "user":
-            self.context.update(content, [], [], "latest", {}, "")
+            # Update context with user input
+            self.context.update(
+                content,
+                [],  # companies
+                [],  # metrics
+                [],  # startDate
+                [],  # endDate
+                None,  # industry
+                {},  # intent
+                ""
+            )
         elif role == "assistant":
             self.context.update_ai_response(content)
 

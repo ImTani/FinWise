@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from neo4j import GraphDatabase
 import logging
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
@@ -12,6 +13,8 @@ class DatabaseManager:
         try:
             with self.driver.session() as session:
                 result = session.run(query, params)
+                logger.debug(f"Neo4j query: {query}")
+                logger.debug(f"Neo4j result: {result}")
                 return [dict(record) for record in result]
         except Exception as e:
             logger.error(f"Neo4j query failed: {e}")
@@ -59,7 +62,7 @@ class DatabaseManager:
     def database_is_empty(self) -> bool:
         query = "MATCH (n) RETURN COUNT(n) AS count"
         result = self.execute_query(query)
-        return result[0]['count'] == 0
+        return result[0]['count'] == 0 if result else True
 
     def get_database_stats(self) -> Dict[str, int]:
         queries = {

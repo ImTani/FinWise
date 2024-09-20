@@ -1,33 +1,31 @@
 import os
+import logging
+from typing import Dict, Any, List, Tuple
 import streamlit as st
+import pandas as pd
 from neo4j import GraphDatabase
 import openai
 from datetime import datetime
+
 from modules.database_manager import DatabaseManager
 from modules.conversation_manager import Conversation, ConversationContext, save_conversation, load_conversation
-from modules.nlp_processor import extract_entities_and_intent, extract_time_period, analyze_query_intent
+from modules.nlp_processor import extract_entities_and_intent
 from modules.query_generator import QueryGenerator
 from modules.chatbot import chatbot_with_context
-import logging
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment variables and configurations
 AURA_CONNECTION_URI = os.environ.get("AURA_CONNECTION_URI", "neo4j+s://2df8ccfd.databases.neo4j.io:7687")
 AURA_USERNAME = os.environ.get("AURA_USERNAME", "neo4j")
 AURA_PASSWORD = os.environ.get("AURA_PASSWORD", "m0bp___En5qsHdQyjxKEuxCx-lMEZBgmgNESxLjZIHw")
-
 GAIA_NODE_URL = os.environ.get("GAIA_NODE_URL", "https://llama.us.gaianet.network/v1")
 GAIA_NODE_NAME = os.environ.get("GAIA_NODE_NAME", "llama")
 GAIA_NODE_API_KEY = os.environ.get("GAIA_NODE_API_KEY", "API_KEY")
 
-# Initialize Neo4j driver
-def create_driver(uri, username, password):
+def create_driver(uri: str, username: str, password: str):
     try:
-        driver = GraphDatabase.driver(uri, auth=(username, password))
-        return driver
+        return GraphDatabase.driver(uri, auth=(username, password))
     except Exception as e:
         logger.error(f"Error creating driver: {e}")
         return None
@@ -36,7 +34,10 @@ class FinWiseApp:
     def __init__(self):
         self.driver = create_driver(AURA_CONNECTION_URI, AURA_USERNAME, AURA_PASSWORD)
         self.client = openai.OpenAI(base_url=GAIA_NODE_URL, api_key=GAIA_NODE_API_KEY)
+        self.query_generator = QueryGenerator(self.client, GAIA_NODE_NAME)
+        self.initialize_session_state()
 
+    def initialize_session_state(self):
         if 'current_conversation' not in st.session_state:
             st.session_state.current_conversation = Conversation()
         if 'conversations' not in st.session_state:
@@ -45,6 +46,10 @@ class FinWiseApp:
             st.session_state.db_manager = DatabaseManager(self.driver)
             if st.session_state.db_manager.database_is_empty():
                 st.error("The database is empty. Please add some data before using FinWise AI.")
+        if 'uploaded_file' not in st.session_state:
+            st.session_state.uploaded_file = None
+        if 'chart_data' not in st.session_state:
+            st.session_state.chart_data = None
 
     def sidebar(self):
         with st.sidebar:
@@ -52,6 +57,7 @@ class FinWiseApp:
             if st.button("🔄 New Conversation"):
                 self.new_conversation()
             self.past_conversations()
+            self.file_uploader()
             self.database_manager()
             self.recent_insights()
             self.help_section()
@@ -63,29 +69,31 @@ class FinWiseApp:
 
     def past_conversations(self):
         st.subheader("Past Conversations")
-        conversations = list(st.session_state.conversations.values())
-        conversations.sort(key=lambda x: datetime.fromisoformat(x['updated_at']), reverse=True)
+        conversations = sorted(
+            st.session_state.conversations.values(),
+            key=lambda x: datetime.fromisoformat(x['updated_at']),
+            reverse=True
+        )
+        self.display_conversations(conversations[:10])
+        if len(conversations) > 10:
+            with st.expander("Show more"):
+                self.display_conversations(conversations[10:])
+        st.divider()
 
-        for conv in conversations[:10]:
+    def display_conversations(self, conversations):
+        for conv in conversations:
             conv_id = conv['id']
-            conv_title = conv['title'][:10] + "..."
-
-            cols = st.columns([5, 1])
+            conv_title = f"{conv['title'][:20]}..."
+            cols = st.columns([5, 1, 1])
             if cols[0].button(conv_title, key=f"conv_{conv_id}"):
                 st.session_state.current_conversation = load_conversation(conv_id, st.session_state.conversations)
                 st.rerun()
-
             if cols[1].button("✏️", key=f"rename_btn_{conv_id}", help="Rename"):
                 self.rename_conversation(conv, conv_title)
+            if cols[2].button("🗑️", key=f"delete_btn_{conv_id}", help="Delete"):
+                self.delete_conversation(conv_id)
 
-        if len(conversations) > 10:
-            with st.expander("Show more"):
-                for conv in conversations[10:]:
-                    if st.button(f"{conv['title'][:10]}...", key=f"conv_{conv['id']}"):
-                        st.session_state.current_conversation = load_conversation(conv['id'], st.session_state.conversations)
-                        st.rerun()
-
-    def rename_conversation(self, conv, conv_title):
+    def rename_conversation(self, conv: Dict[str, Any], conv_title: str):
         new_title = st.text_input(f"Rename {conv_title}:", value=conv['title'], key=f"rename_input_{conv['id']}")
         if st.button("Submit", key=f"submit_rename_{conv['id']}"):
             if new_title != conv['title'] and new_title.strip():
@@ -93,28 +101,29 @@ class FinWiseApp:
                 st.session_state.conversations = save_conversation(Conversation.from_dict(conv), st.session_state.conversations)
                 st.rerun()
 
+    def delete_conversation(self, conv_id: str):
+        if st.button("Confirm Delete", key=f"confirm_delete_{conv_id}"):
+            del st.session_state.conversations[conv_id]
+            st.rerun()
+
     def database_manager(self):
         with st.expander("📊 Database", expanded=False):
             new_uri = st.text_input("Neo4j Connection URI", value=AURA_CONNECTION_URI)
             new_username = st.text_input("Username", value=AURA_USERNAME)
             new_password = st.text_input("Password", value=AURA_PASSWORD, type="password")
-
             if st.button("Load Database"):
                 self.load_database(new_uri, new_username, new_password)
-
             if st.session_state.db_manager:
                 self.display_database_stats()
 
-    def load_database(self, uri, username, password):
+    def load_database(self, uri: str, username: str, password: str):
         try:
             new_driver = create_driver(uri, username, password)
             if new_driver is not None:
                 st.session_state.db_manager = DatabaseManager(new_driver)
                 stats = st.session_state.db_manager.get_database_stats()
                 st.success("Database loaded successfully.")
-                st.write(f"Companies: {stats['companies']}")
-                st.write(f"Metrics: {stats['metrics']}")
-                st.write(f"Metric Values: {stats['metric_values']}")
+                self.display_database_stats()
             else:
                 st.error("Failed to connect to the database. Please check your credentials.")
         except Exception as e:
@@ -122,9 +131,8 @@ class FinWiseApp:
 
     def display_database_stats(self):
         stats = st.session_state.db_manager.get_database_stats()
-        st.write(f"Companies: {stats['companies']}")
-        st.write(f"Metrics: {stats['metrics']}")
-        st.write(f"Metric Values: {stats['metric_values']}")
+        for key, value in stats.items():
+            st.write(f"{key.capitalize()}: {value}")
 
     def recent_insights(self):
         st.subheader("Recent Insights")
@@ -133,85 +141,159 @@ class FinWiseApp:
 
     def generate_insight(self) -> str:
         prompt = "Fetch the latest data from our database and return a meaningful, bite-sized, and concise insight about the data. Return as short and concise a message as possible."
-        insight = self.process_user_input(prompt)
+        return self.generate_standalone_insight(prompt)
+
+    def generate_standalone_insight(self, prompt: str) -> str:
+        insight = chatbot_with_context(prompt, ConversationContext(), self.client, GAIA_NODE_NAME)
         return insight
 
     def help_section(self):
         with st.expander("ℹ️ Help / About", expanded=False):
             st.write("FinWise AI is your advanced financial assistant. Ask questions about companies, financial metrics, and market trends to get insightful answers backed by our comprehensive database.")
+            st.write("You can:")
+            st.write("- Compare companies and their financial metrics")
+            st.write("- Analyze trends over time")
+            st.write("- Get insights on specific industries")
+            st.write("- Upload financial data for analysis")
+            st.write("For the best experience, be specific in your questions and mention company names, metrics, and time periods when relevant.")
+
+    def file_uploader(self):
+        st.subheader("📁 Upload File")
+        uploaded_file = st.file_uploader("Upload a TXT or CSV file", type=["txt", "csv"], key="file_uploader")
+        if uploaded_file and uploaded_file != st.session_state.uploaded_file:
+            st.session_state.uploaded_file = uploaded_file
+            self.handle_file_upload(uploaded_file)
 
     def main_chat_area(self):
         st.header(st.session_state.current_conversation.title)
-
-        # Display chat messages
-        for msg in st.session_state.current_conversation.messages:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-
-        # Create a container for user input and file upload
-        input_container = st.container()
-        with input_container:
-            col1, col2 = st.columns([4, 1])  # Adjust column sizes as needed
-
-            with col1:
-                user_input = st.chat_input("Type your message here...")
-    
+        chat_container = st.container()
+        with chat_container:
+            for msg in st.session_state.current_conversation.messages:
+                with st.chat_message(msg["role"]):
+                    st.write(msg["content"])
+        
+        if st.session_state.chart_data is not None:
+            self.display_chart(st.session_state.chart_data)
+        
+        user_input = st.chat_input("Type your message here...")
         if user_input:
             self.handle_user_input(user_input)
-        
-        # if uploaded_file is not None:
-        #     self.handle_file_upload(uploaded_file)
 
     def handle_file_upload(self, uploaded_file):
-        # Logic to process the uploaded file
-        # For example, read the content and extract necessary data
-        try:
-            # Example: Reading a CSV file
-            if uploaded_file.type == "text/csv":
-                import pandas as pd
-                data = pd.read_csv(uploaded_file)
-                st.success("File uploaded successfully!")
-                st.write(data)  # Display the data for confirmation
-                # You can also add logic to process this data further
-            elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                import pandas as pd
-                data = pd.read_excel(uploaded_file)
-                st.success("File uploaded successfully!")
-                st.write(data)  # Display the data for confirmation
-                # Add processing logic as needed
-        except Exception as e:
-            st.error(f"Error processing the uploaded file: {e}")
+        file_contents = self.read_file(uploaded_file)
+        with st.spinner("Processing file..."):
+            response = self.process_file_contents(file_contents, uploaded_file.name)
+        st.success(f"File processed: {uploaded_file.name}")
+        st.session_state.current_conversation.add_message("user", f"Uploaded file: {uploaded_file.name}")
+        st.session_state.current_conversation.add_message("assistant", response)
+        st.session_state.conversations = save_conversation(st.session_state.current_conversation, st.session_state.conversations)
+        st.rerun()
 
-    def handle_user_input(self, user_input):
+    def read_file(self, uploaded_file):
+        if uploaded_file.type == "text/csv":
+            return pd.read_csv(uploaded_file)
+        return uploaded_file.getvalue().decode("utf-8")
+
+    def process_file_contents(self, file_contents, filename):
+        prompt = f"""
+        Analyze the following file contents from {filename}:
+
+        {file_contents[:2000]}  # Limit to first 2000 characters for brevity
+
+        Identify any relevant information about companies, their metrics, and financial data.
+        If you find relevant information that can be added to our database, list all of it and ask the user if they want to add it to the database.
+
+        If no relevant information is found, please state that.
+        """
+        return self.process_user_input(prompt)
+
+    def handle_user_input(self, user_input: str):
         st.session_state.current_conversation.add_message("user", user_input)
-
         with st.chat_message("user"):
             st.write(user_input)
-
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = self.process_user_input(user_input)
             st.write(response)
-
         st.session_state.current_conversation.add_message("assistant", response)
         st.session_state.conversations = save_conversation(st.session_state.current_conversation, st.session_state.conversations)
 
-    def process_user_input(self, user_input):
+    def process_user_input(self, user_input: str) -> str:
         entities, intent = extract_entities_and_intent(user_input)
-        time_period = extract_time_period(user_input)
-        query_intent = analyze_query_intent(user_input)
-
-        query = QueryGenerator.generate_query(query_intent, st.session_state.current_conversation.context.current_entities)
-        kg_response = st.session_state.db_manager.execute_query(query)
-
-        if not kg_response:
-            kg_response = st.session_state.db_manager.get_all_data()
-
-        st.session_state.current_conversation.context.update(user_input, entities["companies"], entities["metrics"], time_period, query_intent, str(kg_response))
+        
+        try:
+            query, is_valid, explanation = self.query_generator.generate_and_validate_query(intent, entities)
+            
+            if is_valid:
+                logger.info(f"Valid query generated: {query}")
+                
+                required_params = self.query_generator.extract_parameters_from_query(query)
+                
+                parameters = self._prepare_query_parameters(entities, required_params)
+                
+                logger.debug(f"Executing Query with Parameters: {parameters}")
+                
+                try:
+                    kg_response = st.session_state.db_manager.execute_query(query, parameters)
+                    
+                    self._update_conversation_context(user_input, entities, intent, kg_response)
+                    
+                    # Process the kg_response to generate chart data if applicable
+                    st.session_state.chart_data = self.process_chart_data(kg_response, intent)
+                    
+                except Exception as e:
+                    logger.error(f"Neo4j query execution failed: {e}")
+                    kg_response = f"I encountered an error while fetching the data: {str(e)}. Please try rephrasing your question or providing more specific information."
+                    self._update_conversation_context(user_input, entities, intent, kg_response)
+            
+            else:
+                logger.warning(f"Invalid query generated: {query}")
+                logger.warning(f"Validation explanation: {explanation}")
+                kg_response = f"I apologize, but I couldn't generate a valid query to answer your question. The issue was: {explanation}. Could you please rephrase or provide more details?"
+        
+        except Exception as e:
+            logger.error(f"Query generation failed: {e}")
+            kg_response = "I encountered an unexpected error while processing your question. Please try again or rephrase your query."
         
         ai_response = chatbot_with_context(user_input, st.session_state.current_conversation.context, self.client, GAIA_NODE_NAME)
         st.session_state.current_conversation.context.update_ai_response(ai_response)
         return ai_response
+
+    def _prepare_query_parameters(self, entities: Dict[str, List[str]], required_params: List[str]) -> Dict[str, Any]:
+        parameters = {}
+        for param in required_params:
+            if param in entities and entities[param]:
+                if param == "limit":
+                    parameters[param] = int(entities[param][0])
+                elif param in ["startDate", "endDate"]:
+                    parameters[param] = entities[param][0]
+                else:
+                    parameters[param] = entities[param]
+            else:
+                parameters[param] = None
+        return parameters
+
+    def _update_conversation_context(self, user_input: str, entities: Dict[str, List[str]], intent: Dict[str, Any], kg_response: str):
+        st.session_state.current_conversation.context.update(
+            user_input=user_input,
+            companies=entities.get("companies", []),
+            metrics=entities.get("metrics", []),
+            start_date=entities.get("startDate", ["latest"]),
+            end_date=entities.get("endDate", []),
+            industry=entities.get("industry", None),
+            intent=intent,
+            kg_response=str(kg_response)
+        )
+
+    def process_chart_data(self, kg_response, intent):
+        # This method would process the kg_response and generate chart data based on the intent
+        # For now, we'll return None as a placeholder
+        return None
+
+    def display_chart(self, chart_data):
+        # This method would display a chart based on the chart_data
+        # For now, we'll just display a placeholder message
+        st.write("Chart placeholder: Data visualization would be displayed here")
 
 def main():
     app = FinWiseApp()
