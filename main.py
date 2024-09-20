@@ -2,11 +2,12 @@ import os
 import streamlit as st
 from neo4j import GraphDatabase
 import openai
+from datetime import datetime
 from modules.database_manager import DatabaseManager
-from modules.conversation_context import ConversationContext
+from modules.conversation_manager import Conversation, ConversationContext, save_conversation, load_conversation
 from modules.nlp_processor import extract_entities_and_intent, extract_time_period, analyze_query_intent
 from modules.query_generator import QueryGenerator
-from modules.chatbot import generate_system_message, prepare_messages, chatbot_with_context
+from modules.chatbot import chatbot_with_context
 import logging
 
 # Setup logging
@@ -28,13 +29,18 @@ driver = GraphDatabase.driver(AURA_CONNECTION_URI, auth=(AURA_USERNAME, AURA_PAS
 # OpenAI client
 client = openai.OpenAI(base_url=GAIA_NODE_URL, api_key=GAIA_NODE_API_KEY)
 
+def create_driver(uri, username, password):
+    try:
+        driver = GraphDatabase.driver(uri, auth=(username, password))
+        return driver
+    except Exception as e:
+        logger.error(f"Error creating driver: {e}")
+        return None
+
 def process_user_input(user_input: str, context: ConversationContext, db_manager: DatabaseManager) -> str:
     entities, intent = extract_entities_and_intent(user_input)
     time_period = extract_time_period(user_input)
     query_intent = analyze_query_intent(user_input)
-    
-    if "update database" in user_input.lower() or "modify database" in user_input.lower():
-        return handle_database_modification(user_input, db_manager)
     
     query = QueryGenerator.generate_query(query_intent, context.current_entities)
     kg_response = db_manager.execute_query(query)
@@ -48,86 +54,122 @@ def process_user_input(user_input: str, context: ConversationContext, db_manager
     context.update_ai_response(ai_response)
     return ai_response
 
-def handle_database_modification(user_input: str, db_manager: DatabaseManager) -> str:
-    plan = generate_db_modification_plan(user_input, client, GAIA_NODE_NAME)
-    
-    confirmation = st.button(f"Confirm the following changes:\n{plan}")
-    
-    if confirmation:
-        execute_db_modification_plan(plan, db_manager)
-        return "Database has been updated according to your instructions."
-    else:
-        return "No changes were made to the database. Please confirm the changes to proceed."
+def generate_insight(db_manager: DatabaseManager) -> str:
+    prompt = "Fetch the latest data from our database and return a meaningul, bite-sized, and concise insight about the data. Return as short and concise a message as possible."
 
-def generate_db_modification_plan(user_input: str, client, model_name):
-    prompt = f"Generate a step-by-step plan to modify the database based on this request: {user_input}"
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=200
-    )
-    return response.choices[0].message.content
+    insight = process_user_input(prompt, ConversationContext(), db_manager)
 
-def execute_db_modification_plan(plan: str, db_manager: DatabaseManager):
-    steps = plan.split("\n")
-    for step in steps:
-        if step.startswith("Clear database"):
-            db_manager.clear_database()
-        elif step.startswith("Add company"):
-            company_name = step.split(":")[1].strip()
-            db_manager.add_company(company_name)
-        elif step.startswith("Add metric"):
-            parts = step.split(":")
-            company_name = parts[1].strip()
-            metric_name = parts[2].strip()
-            value = parts[3].strip()
-            db_manager.add_metric(company_name, metric_name, value)
+    return insight
 
 def main():
-    st.title("FinWise AI")
+    st.set_page_config(page_title="FinWise AI", page_icon="💼", layout="wide", initial_sidebar_state="expanded")
 
-    if "context" not in st.session_state:
-        st.session_state.context = ConversationContext()
+    if 'current_conversation' not in st.session_state:
+        st.session_state.current_conversation = Conversation()
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "How can I help you with financial information today?"}]
+    if 'conversations' not in st.session_state:
+        st.session_state.conversations = {}
 
-    if "db_manager" not in st.session_state:
+    if 'db_manager' not in st.session_state:
         st.session_state.db_manager = DatabaseManager(driver)
         if st.session_state.db_manager.database_is_empty():
-            st.session_state.db_manager.populate_sample_data()
-            st.success("Database populated with sample data.")
+            st.error("The database is empty. Please add some data before using FinWise AI.")
 
-    # Display database stats
-    stats = st.session_state.db_manager.get_database_stats()
-    st.sidebar.header("Database Stats")
-    st.sidebar.write(f"Companies: {stats['companies']}")
-    st.sidebar.write(f"Metrics: {stats['metrics']}")
-    st.sidebar.write(f"Metric Values: {stats['metric_values']}")
-
-    # Button to reload sample data
-    if st.sidebar.button("Reload Sample Data"):
-        st.session_state.db_manager.clear_database()
-        st.session_state.db_manager.populate_sample_data()
-        st.sidebar.success("Sample data reloaded successfully!")
-
-    for msg in st.session_state.messages:
-        st.chat_message(msg["role"]).write(msg["content"])
-
-    if prompt := st.chat_input():
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        st.chat_message("user").write(prompt)
-        
-        response = process_user_input(prompt, st.session_state.context, st.session_state.db_manager)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.chat_message("assistant").write(response)
-
+    # Sidebar
     with st.sidebar:
-        st.header("About FinWise AI")
-        st.write("FinWise AI is your advanced financial assistant, providing insights and information about companies and their financial metrics.")
-        st.write("Ask about company revenues, profits, compare metrics, or inquire about financial trends!")
+        st.title("FinWise AI")
+
+        if st.button("🔄 New Conversation"):
+            st.session_state.conversations = save_conversation(st.session_state.current_conversation, st.session_state.conversations)
+            st.session_state.current_conversation = Conversation()  # New conversation is created without a title.
+            st.rerun()
+
+        st.subheader("Past Conversations")
+        conversations = list(st.session_state.conversations.values())
+        conversations.sort(key=lambda x: datetime.fromisoformat(x['updated_at']), reverse=True)
+
+        for conv in conversations[:10]:  # Show only the 10 most recent conversations
+            conv_id = conv['id']
+            conv_title = conv['title'][:10] + "..." 
+
+            cols = st.columns([5, 1])
+            if cols[0].button(conv_title, key=f"conv_{conv_id}"):
+                st.session_state.current_conversation = load_conversation(conv_id, st.session_state.conversations)
+                st.rerun()
+
+            # Rename button logic
+            if cols[1].button("✏️", key=f"rename_btn_{conv_id}", help="Rename"):
+                new_title = st.text_input(f"Rename {conv_title}:", value=conv['title'], key=f"rename_input_{conv_id}")
+
+                # Submit button for renaming
+                if st.button("Submit", key=f"submit_rename_{conv_id}"):
+                    if new_title != conv['title'] and new_title.strip():
+                        conv['title'] = new_title.strip()  # Strip whitespace
+                        st.session_state.conversations = save_conversation(Conversation.from_dict(conv), st.session_state.conversations)
+                        st.rerun()
+
+        if len(conversations) > 10:
+            with st.expander("Show more"):
+                for conv in conversations[10:]:
+                    if st.button(f"{conv['title'][:10]}...", key=f"conv_{conv['id']}"):
+                        st.session_state.current_conversation = load_conversation(conv['id'], st.session_state.conversations)
+                        st.rerun()
+
+        with st.divider():
+            pass
+
+        with st.expander("📊 Database", expanded=False):
+            # Input fields for Neo4j connection
+            new_uri = st.text_input("Neo4j Connection URI", value=AURA_CONNECTION_URI)
+            new_username = st.text_input("Username", value=AURA_USERNAME)
+            new_password = st.text_input("Password", value=AURA_PASSWORD, type="password")
+
+            if st.button("Load Database"):
+                try:
+                    new_driver = create_driver(new_uri, new_username, new_password)
+                    if new_driver is not None:
+                        st.session_state.db_manager = DatabaseManager(new_driver)
+                        stats = st.session_state.db_manager.get_database_stats()
+                        st.success("Database loaded successfully.")
+                        st.write(f"Companies: {stats['companies']}")
+                        st.write(f"Metrics: {stats['metrics']}")
+                        st.write(f"Metric Values: {stats['metric_values']}")
+                    else:
+                        st.error("Failed to connect to the database. Please check your credentials.")
+                except Exception as e:
+                    st.error(f"Error loading database: {e}")
+
+        with st.expander("ℹ️ Help / About", expanded=False):
+            st.write("FinWise AI is your advanced financial assistant. Ask questions about companies, financial metrics, and market trends to get insightful answers backed by our comprehensive database.")
+
+    # Main chat area
+    st.header(st.session_state.current_conversation.title)
+
+    # Display chat messages
+    for msg in st.session_state.current_conversation.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # User input
+    user_input = st.chat_input("Type your message here...")
+    if user_input:
+        st.session_state.current_conversation.add_message("user", user_input)
+        
+        with st.chat_message("user"):
+            st.write(user_input)
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = process_user_input(user_input, st.session_state.current_conversation.context, st.session_state.db_manager)
+            st.write(response)
+        
+        st.session_state.current_conversation.add_message("assistant", response)
+        st.session_state.conversations = save_conversation(st.session_state.current_conversation, st.session_state.conversations)
+
+    # Recent Insights
+    with st.sidebar:
+        st.subheader("Recent Insights")
+        st.info(generate_insight(db_manager=st.session_state.db_manager))
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 from typing import List, Dict
-from modules.conversation_context import ConversationContext
+from modules.conversation_manager import ConversationContext
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,13 +8,14 @@ def generate_system_message() -> str:
     return """You are FinWise, an advanced financial assistant with access to a comprehensive knowledge graph containing detailed company metrics and reports. Your primary role is to provide accurate, concise, and insightful financial information. Follow these guidelines:
 
 1. Dynamically craft and execute database queries based on the user's requests to retrieve relevant data about companies, their financial metrics, and reports.
-2. If the database lacks specific data, provide general financial insights based on your knowledge.
-3. Always specify the source of your information, whether it is from the database or general financial knowledge.
-4. Use the Indian numeric system and Indian Rupee (INR) for all financial values.
-5. Clearly state the basis of comparison when comparing companies or metrics.
-6. For trend analysis, offer a brief explanation of the factors influencing observed trends.
-7. Clearly state that future predictions are estimates based on current data and trends.
-8. When referencing reports, summarize key points but encourage users to review the full report for detailed insights.
+2. Avoid technical jargon and database details; users should not need to understand how data is retrieved.
+3. Avoid adding unnecessary explanatory notes about how you are presenting information or the structure of your answers.
+4. If specific data is not available in the knowledge graph, clearly state that and provide general financial insights based on your knowledge.
+5. Use the Indian numeric system and Indian Rupee (INR) for all financial values.
+6. Clearly state the basis of any comparisons made between companies or metrics.
+7. For trend analysis, offer brief explanations of the factors influencing observed trends without excessive detail.
+8. Clearly state that future predictions are estimates based on current data and trends.
+9. When referencing reports, summarize key points and encourage users to review the full report for detailed insights.
 
 You have access to the following structures in the database:
 - **Company**: Entities representing companies, with attributes such as unique name, industry, location, revenue, and employee count.
@@ -22,14 +23,20 @@ You have access to the following structures in the database:
 - **MetricValue**: Values for metrics associated with specific companies over time.
 - **Report**: Documents containing financial reports, identified by a unique ID, type (e.g., Annual, Quarterly), date, and content.
 
-Example queries you can use:
-1. To fetch the latest revenue of a specific company:
-   `MATCH (c:Company {name: 'TCS'})-[:HAS_METRIC]->(mv:MetricValue)-[:OF_METRIC]->(m:Metric {name: 'Revenue'}) RETURN mv.value ORDER BY mv.date DESC LIMIT 1`
+Example queries you can execute:
+1. To find the company with the highest revenue:
+   `MATCH (c:Company)-[:HAS_METRIC]->(m:Metric {name: 'Revenue'})<-[:HAS_VALUE]-(mv:MetricValue) RETURN c.name, mv.value ORDER BY mv.value DESC LIMIT 1`
    
-2. To retrieve the most recent quarterly report for a company:
+2. To retrieve the most recent quarterly report for a specific company:
    `MATCH (c:Company {name: 'HDFC Bank'})-[:HAS_REPORT]->(r:Report {type: 'Quarterly'}) RETURN r.content ORDER BY r.date DESC LIMIT 1`
 
-You can dynamically generate queries to fetch relevant financial data based on this structure to accurately respond to user queries."""
+Example response format:
+- For a query about company revenue, respond with the company name and revenue figure, without technical details or any additional explanatory notes.
+
+Example:
+"The company with the highest revenue is **TCS**, with a total of ₹10,42,900 crore. This figure is based on the latest data available in our knowledge graph."
+
+This structure ensures that user interactions are friendly and informative, focusing on delivering valuable insights efficiently while clearly indicating when data is not available."""
 
 def prepare_messages(system_message: str, user_input: str, context: ConversationContext) -> List[Dict[str, str]]:
     context_summary = context.get_context_summary()
@@ -52,6 +59,25 @@ def prepare_messages(system_message: str, user_input: str, context: Conversation
 def chatbot_with_context(user_input: str, context: ConversationContext, client, model_name: str) -> str:
     system_message = generate_system_message()
     messages = prepare_messages(system_message, user_input, context)
+    
+    try:
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=300
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error in LLM request: {e}")
+        return "I apologize, but I encountered an error while processing your request. Please try again."
+
+def chatbot_no_context(user_input: str, client, model_name: str) -> str:
+    system_message = "Accurately help with the query, be precise and return only whats asked, no extra words."
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": f"User Query: {user_input}"}
+    ]
     
     try:
         completion = client.chat.completions.create(
