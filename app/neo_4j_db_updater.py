@@ -74,11 +74,8 @@ def populate_database():
     logging.info("Starting database population.")
     
     companies = [
-        ("TCS", "IT Services", "India", 18000, 100000),
-        ("Infosys", "IT Services", "India", 12000, 85000),
-        ("Reliance Industries", "Conglomerate", "India", 50000, 150000),
-        ("HDFC Bank", "Banking", "India", 20000, 80000),
-        ("Bharti Airtel", "Telecommunications", "India", 16000, 120000)
+        ("Apple", "Technology", "United States", 365000, 147000),
+        ("Microsoft", "Technology", "United States", 198000, 221000)
     ]
     
     metrics = [
@@ -91,31 +88,72 @@ def populate_database():
     ]
     
     with driver.session() as session:
+        # Create Companies
         for company, industry, location, revenue, employees in companies:
             logging.info(f"Adding company: {company}")
             session.execute_write(create_company, company, industry, location, revenue, employees)
         
-        for metric, description, unit in metrics:
-            logging.info(f"Adding metric: {metric}")
-            session.execute_write(create_metric, metric, description, unit)
-        
-        # Add sample metric values
+        # Define the date range for 5 years
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365*3)  # 3 years of data
+        start_date = end_date - timedelta(days=365*5)  # 5 years of data
         current_date = start_date
         
         logging.info("Adding metric values and reports.")
         while current_date <= end_date:
             for company, _, _, _, _ in companies:
-                for metric, _, _ in metrics:
-                    if metric in ["Revenue", "EBITDA", "Net Profit"]:
-                        value = random.uniform(50, 2000)
+                for metric, _, unit in metrics:
+                    # Generate realistic sample values based on metric
+                    if metric == "Revenue":
+                        if company == "Apple":
+                            value = random.uniform(200, 400) * 1000  # USD Millions
+                        elif company == "Microsoft":
+                            value = random.uniform(150, 250) * 1000  # USD Millions
+                        else:
+                            value = random.uniform(50, 2000)
+                    elif metric == "Net Profit":
+                        if company == "Apple":
+                            value = random.uniform(50, 100) * 1000
+                        elif company == "Microsoft":
+                            value = random.uniform(40, 90) * 1000
+                        else:
+                            value = random.uniform(0, 2000)
+                    elif metric == "EBITDA":
+                        if company == "Apple":
+                            value = random.uniform(70, 120) * 1000
+                        elif company == "Microsoft":
+                            value = random.uniform(60, 110) * 1000
+                        else:
+                            value = random.uniform(0, 2000)
                     elif metric == "EPS":
-                        value = random.uniform(5, 100)
+                        if company == "Apple":
+                            value = random.uniform(3, 6)
+                        elif company == "Microsoft":
+                            value = random.uniform(5, 9)
+                        else:
+                            value = random.uniform(0.1, 100)
+                    elif metric == "Debt to Equity":
+                        if company == "Apple":
+                            value = random.uniform(1.0, 2.0)
+                        elif company == "Microsoft":
+                            value = random.uniform(0.5, 1.5)
+                        else:
+                            value = random.uniform(0.1, 5.0)
                     elif metric == "Employee Count":
                         value = random.randint(1000, 200000)
                     else:
                         value = random.uniform(0.1, 5.0)
+                    
+                    # Adjust units for Apple and Microsoft metrics
+                    if company in ["Apple", "Microsoft"] and metric in ["Revenue", "Net Profit", "EBITDA"]:
+                        # Assuming values are in USD Millions
+                        pass  # Values already set appropriately
+                    elif metric == "Employee Count":
+                        pass  # No change needed
+                    else:
+                        # For other companies, you might need to adjust units if necessary
+                        pass
+                    
+                    # Add metric value
                     session.execute_write(add_metric_value, company, metric, round(value, 2), current_date.strftime("%Y-%m-%d"))
             
             current_date += timedelta(days=90)  # Quarterly data
@@ -123,14 +161,12 @@ def populate_database():
         report_types = ["Annual", "Quarterly"]
         for company, _, _, _, _ in companies:
             for report_type in report_types:
-                date = end_date - timedelta(days=random.randint(0, 365))
+                date = end_date - timedelta(days=random.randint(0, 365*5))
                 content = generate_sample_report_content(company, report_type)
                 session.execute_write(add_report, company, report_type, date.strftime("%Y-%m-%d"), content)
 
     logging.info("Database population complete.")
 
 if __name__ == "__main__":
-    clear_database()
-    create_constraints()
     populate_database()
     driver.close()
